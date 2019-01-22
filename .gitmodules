@@ -1,0 +1,3 @@
+[submodule "xmoto-gym"]
+	path = xmoto-gym
+	url = https://github.com/louis030195/xmoto-gym.git
