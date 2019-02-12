@@ -182,11 +182,13 @@ def optimize_model():
         param.grad.data.clamp_(-1, 1)
     optimizer.step()
 
-num_episodes = 20
+    return loss
+
+num_episodes = 200
+mean_reward = 0
 for i_episode in range(num_episodes):
     # Initialize the environment and state
     state = torch.from_numpy(env.reset())
-
     for t in count():
         # Select and perform an action
         action = select_action(state)
@@ -208,9 +210,12 @@ for i_episode in range(num_episodes):
         state = next_state
 
         # Perform one step of the optimization (on the target network)
-        optimize_model()
+        loss = optimize_model()
         if done:
+            mean_reward = (mean_reward + reward) / 2
+            print('Episodes %d - mean_reward %3f - loss %3f' % (i_episode, mean_reward, loss if loss is not None else 0))
             break
+                
     # Update the target network
     if i_episode % TARGET_UPDATE == 0:
         target_net.load_state_dict(policy_net.state_dict())
