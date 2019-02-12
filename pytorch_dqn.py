@@ -7,6 +7,7 @@ import numpy as np
 from collections import namedtuple
 from itertools import count
 from PIL import Image
+from utils import save_gradient_images
 
 import torch
 import torch.nn as nn
@@ -24,6 +25,41 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 Transition = namedtuple('Transition',
                         ('state', 'action', 'next_state', 'reward'))
 
+
+class VanillaBackpropVisualization():
+    """
+        Produces gradients generated with vanilla back propagation from the image
+    """
+    def __init__(self, model):
+        self.model = model
+        self.gradients = None
+        # Put model in evaluation mode
+        self.model.eval()
+        # Hook the first layer to get the gradient
+        self.hook_layers()
+
+    def hook_layers(self):
+        def hook_function(module, grad_in, grad_out):
+            self.gradients = grad_in[0]
+
+        # Register hook to the first layer
+        first_layer = list(self.model._modules.items())[0][1]
+        first_layer.register_backward_hook(hook_function)
+
+    def generate_gradients(self, input_image, action):
+        # Forward
+        model_output = self.model(input_image)
+        # Zero grads
+        self.model.zero_grad()
+        # Target for backprop
+        one_hot_output = torch.FloatTensor(1, model_output.size()[-1]).zero_()
+        one_hot_output[0][action] = 1
+        # Backward pass
+        model_output.backward(gradient=one_hot_output)
+        # Convert Pytorch variable to numpy array
+        # [0] to get rid of the first channel (1,3,224,224)
+        gradients_as_arr = self.gradients.data.numpy()[0]
+        return gradients_as_arr
 
 class ReplayMemory(object):
 
@@ -84,6 +120,7 @@ EPS_DECAY = 200
 TARGET_UPDATE = 10
 
 policy_net = DQN(200, 150).to(device)
+vbp = VanillaBackpropVisualization(policy_net)
 target_net = DQN(200, 150).to(device)
 target_net.load_state_dict(policy_net.state_dict())
 target_net.eval()
@@ -145,13 +182,19 @@ def optimize_model():
         param.grad.data.clamp_(-1, 1)
     optimizer.step()
 
-num_episodes = 5000
+num_episodes = 20
 for i_episode in range(num_episodes):
     # Initialize the environment and state
     state = torch.from_numpy(env.reset())
+
     for t in count():
         # Select and perform an action
         action = select_action(state)
+
+        # Generate gradients & save
+        # Doesn't work
+        # save_gradient_images(vbp.generate_gradients(state, action), str(i_episode) + '_Vanilla_BP_color')
+
         next_state, reward, done, _ = env.step(action.item())
         reward = torch.tensor([reward], device=device)
 
@@ -171,6 +214,7 @@ for i_episode in range(num_episodes):
     # Update the target network
     if i_episode % TARGET_UPDATE == 0:
         target_net.load_state_dict(policy_net.state_dict())
+
 
 print('Complete')
 env.close()
