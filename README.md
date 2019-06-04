@@ -2,6 +2,7 @@
 reinforcement learning algorithms for [xmoto_gym](https://github.com/louis030195/xmoto-gym) environment
 
 ## Installation
+LINUX REQUIRE ROOT BECAUSE OF [keyboard](https://github.com/boppreh/keyboard)
 ```
 pip install gym_xmoto
 ```
@@ -23,8 +24,3 @@ Tensorflow
 ```
 python tensorflow_dqn.py
 ```
-
-## Roadmap
-- [ ] CNN features visualization
-- [ ] Implement Go-Explore algorithm (Xmoto is highly exploratory game)
-- [ ] Solve Xmoto

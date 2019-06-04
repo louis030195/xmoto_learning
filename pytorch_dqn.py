@@ -1,13 +1,36 @@
-# -*- coding: utf-8 -*-
+#!/usr/bin/python
+# -*- coding: latin-1 -*-
+
+from __future__ import division, print_function, unicode_literals
+
+# Handle arguments (before slow imports so --help can be fast)
+import argparse
+parser = argparse.ArgumentParser(
+    description="Train a DQN net for Xmoto")
+
+# hparams
+parser.add_argument("-nl", "--next-level", dest='next_level', type=int, default=200, help="number of steps to go next level")
+parser.add_argument("-bc", "--behaviour-cloning", dest='behaviour_cloning',action='store_true', default=False, help="register yourself playing ?")
+parser.add_argument("-m", "--model-dir", dest='model_dir', type=str, default='./model.pth', help="model directory")
+parser.add_argument("-r", "--no-resume", dest='no_resume', action='store_true', default=False, help="start from existing model")
+parser.add_argument("-e", "--eval", dest='eval', action='store_true', default=False, help="run inference")
+parser.add_argument("-u", "--ugly", dest='ugly', action='store_true', default=False, help="ugly mode, easier to learn")
+
+
+
+args = parser.parse_args()
+
+import sys
 import gym
 import gym_xmoto
 import math
 import random
 import numpy as np
-from collections import namedtuple
+from collections import namedtuple, deque
 from itertools import count
 from PIL import Image
 from utils import save_gradient_images
+import keyboard
 
 import torch
 import torch.nn as nn
@@ -15,9 +38,8 @@ import torch.optim as optim
 import torch.nn.functional as F
 import torchvision.transforms as T
 
-
 env = gym.make('Xmoto-v0')
-env.render()
+env.render(accelerated=not args.behaviour_cloning, ugly_mode=args.ugly) # Behaviour cloning ON = accelerated off
 
 # if gpu is to be used
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -41,6 +63,7 @@ class VanillaBackpropVisualization():
     def hook_layers(self):
         def hook_function(module, grad_in, grad_out):
             self.gradients = grad_in[0]
+            #print(grad_out[0])
 
         # Register hook to the first layer
         first_layer = list(self.model._modules.items())[0][1]
@@ -99,7 +122,7 @@ class DQN(nn.Module):
         convw = conv2d_size_out(conv2d_size_out(conv2d_size_out(w)))
         convh = conv2d_size_out(conv2d_size_out(conv2d_size_out(h)))
         linear_input_size = convw * convh * 32
-        self.head = nn.Linear(linear_input_size, 6) # TODO: make more dynamic code -_- ...
+        self.head = nn.Linear(linear_input_size, env.action_space.n)
 
     def forward(self, x):
         x = x.view((-1, 4, 150, 200)).float()
@@ -120,14 +143,21 @@ EPS_DECAY = 200
 TARGET_UPDATE = 10
 
 policy_net = DQN(200, 150).to(device)
-vbp = VanillaBackpropVisualization(policy_net)
+#vbp = VanillaBackpropVisualization(policy_net)
 target_net = DQN(200, 150).to(device)
-target_net.load_state_dict(policy_net.state_dict())
-target_net.eval()
+#target_net.load_state_dict(policy_net.state_dict())
+
+#target_net.eval()
 
 optimizer = optim.RMSprop(policy_net.parameters())
 memory = ReplayMemory(10000)
 
+if not args.no_resume:
+    print('Resuming from model at path', args.model_dir)
+    checkpoint = torch.load(args.model_dir)
+    policy_net.load_state_dict(checkpoint['policy_net_state_dict'])
+    target_net.load_state_dict(checkpoint['target_net_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
 steps_done = 0
 
@@ -186,40 +216,72 @@ def optimize_model():
 
 num_episodes = 200
 mean_reward = 0
-for i_episode in range(num_episodes):
-    # Initialize the environment and state
-    state = torch.from_numpy(env.reset())
-    for t in count():
-        # Select and perform an action
-        action = select_action(state)
+keys_list = ["up", "left", "down", "right", "space"]
+def append_input(i):
+    if i in keys_list:
+        # print('Key', i.name, 'pressed')
+        inputs.append(i)
 
-        # Generate gradients & save
-        # Doesn't work
-        # save_gradient_images(vbp.generate_gradients(state, action), str(i_episode) + '_Vanilla_BP_color')
+if args.behaviour_cloning:
+    inputs = deque()
+    print("Start recording inputs")
+    keyboard.on_press(append_input) # Add the input to the queue
+    keyboard.on_release(lambda e: inputs.pop()) # Remove last input pressed
 
-        next_state, reward, done, _ = env.step(action.item())
-        reward = torch.tensor([reward], device=device)
+try:
+    for i_episode in range(num_episodes):
+        # Initialize the environment and state
+        state = torch.from_numpy(env.reset())
+        for t in count():
+            # Select and perform an action
+            if not args.behaviour_cloning:
+                action = select_action(state)
+            else:
+                action = torch.tensor([[inputs[0] if len(inputs) > 0 else len(keys_list)]]) # Cast to tensor
 
-        # Cast to tensor
-        next_state = torch.from_numpy(next_state)
+            next_state, reward, done, _ = env.step(action.item())
 
-        # Store the transition in memory
-        memory.push(state, action, next_state, reward)
+            # Reward by states difference => push to explore
+            #print(env.observation_space.shape)
+            distance_between_states = np.linalg.norm(state.numpy() - next_state) / np.linalg.norm(np.zeros(env.observation_space.shape) - np.full(env.observation_space.shape, 255))
+            reward += (distance_between_states * 10) ** 2
 
-        # Move to the next state
-        state = next_state
+            # Cast to tensor
+            reward = torch.tensor([reward], device=device)
 
-        # Perform one step of the optimization (on the target network)
-        loss = optimize_model()
-        if done:
-            mean_reward = (mean_reward + reward) / 2
-            print('Episodes %d - mean_reward %3f - loss %3f' % (i_episode, mean_reward, loss if loss is not None else 0))
-            break
-                
-    # Update the target network
-    if i_episode % TARGET_UPDATE == 0:
-        target_net.load_state_dict(policy_net.state_dict())
+            # Cast to tensor
+            next_state = torch.from_numpy(next_state)
 
+            # Store the transition in memory
+            memory.push(state, action, next_state, reward)
 
-print('Complete')
+            # Move to the next state
+            state = next_state
+
+            # Perform one step of the optimization (on the target network)
+            loss = optimize_model()
+            if done:
+                # Generate gradients & save
+                # Doesn't work
+                # save_gradient_images(vbp.generate_gradients(state, action), str(i_episode) + '_Vanilla_BP_color')
+
+                mean_reward = (mean_reward + reward) / 2
+                print('Episodes %d - mean_reward %3f - loss %3f' % (i_episode, mean_reward, loss if loss is not None else 0))
+                #print('distance_between_states: ', distance_between_states)
+                break
+                    
+        # Update the target network
+        if i_episode % TARGET_UPDATE == 0:
+            target_net.load_state_dict(policy_net.state_dict())
+except KeyboardInterrupt:
+    pass
+
+print('Saving model ...')
+
+torch.save({
+            'policy_net_state_dict': policy_net.state_dict(),
+            'target_net_state_dict': target_net.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict()
+            }, args.model_dir)
+
 env.close()
