@@ -1,4 +1,6 @@
 # xmoto_learning
+**WIP**
+
 reinforcement learning algorithms for [xmoto_gym](https://github.com/louis030195/xmoto-gym) environment
 
 ## Installation
@@ -12,15 +14,9 @@ pip install torch torchvision
 ```
 Tensorflow
 ```
-pip install tensorflow
+pip install tensorflow-gpu
 ```
-
-## Usage
-Pytorch
+Tensorflow2
 ```
-python pytorch_dqn.py
-```
-Tensorflow
-```
-python tensorflow_dqn.py
+pip install tensorflow-gpu==2.0.0-beta0
 ```
